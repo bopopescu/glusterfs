@@ -28,7 +28,7 @@ import gsyncdconfig as gconf
 
 import repce
 from repce import RepceServer, RepceClient
-from master import gmaster_builder
+from main import gmain_builder
 import syncdutils
 from syncdutils import GsyncdError, select, privileged, funcode
 from syncdutils import umask, entry2pb, gauxpfx, errno_wrap, lstat
@@ -360,7 +360,7 @@ class Server(object):
         the difference b/w this and set_xtime() being
         set_xtime() being overloaded to set the xtime
         on the brick (this method sets xtime on the
-        remote slave)
+        remote subordinate)
         """
         Xattr.lsetxattr(
             path, '.'.join([cls.GX_NSPACE, uuid, 'xtime']),
@@ -425,8 +425,8 @@ class Server(object):
             slv_entry_info = {}
             slv_entry_info['gfid_mismatch'] = False
             slv_entry_info['dst'] = dst
-            # We do this for failing fops on Slave
-            # Master should be logging this
+            # We do this for failing fops on Subordinate
+            # Main should be logging this
             if cmd_ret is None:
                 return False
 
@@ -442,10 +442,10 @@ class Server(object):
                     st = lstat(en)
                     if not isinstance(st, int):
                         if st and stat.S_ISDIR(st.st_mode):
-                            slv_entry_info['slave_isdir'] = True
+                            slv_entry_info['subordinate_isdir'] = True
                         else:
-                            slv_entry_info['slave_isdir'] = False
-                    slv_entry_info['slave_gfid'] = disk_gfid
+                            slv_entry_info['subordinate_isdir'] = False
+                    slv_entry_info['subordinate_gfid'] = disk_gfid
                     failures.append((e, cmd_ret, slv_entry_info))
                 else:
                     return False
@@ -569,12 +569,12 @@ class Server(object):
                     blob = entry_pack_mkdir(
                         gfid, bname, e['mode'], e['uid'], e['gid'])
                 else:
-                    # If gfid of a directory exists on slave but path based
+                    # If gfid of a directory exists on subordinate but path based
                     # create is getting EEXIST. This means the directory is
-                    # renamed in master but recorded as MKDIR during hybrid
+                    # renamed in main but recorded as MKDIR during hybrid
                     # crawl. Get the directory path by reading the backend
                     # symlink and trying to rename to new name as said by
-                    # master.
+                    # main.
                     global slv_bricks
                     global slv_volume
                     global slv_host
@@ -809,8 +809,8 @@ class Mounter(object):
     @classmethod
     def get_glusterprog(cls):
         gluster_cmd_dir = gconf.get("gluster-command-dir")
-        if rconf.args.subcmd == "slave":
-            gluster_cmd_dir = gconf.get("slave-gluster-command-dir")
+        if rconf.args.subcmd == "subordinate":
+            gluster_cmd_dir = gconf.get("subordinate-gluster-command-dir")
         return os.path.join(gluster_cmd_dir, cls.glusterprog)
 
     def umount_l(self, d):
@@ -900,15 +900,15 @@ class Mounter(object):
                     assert(mntdata[-1] == '\0')
                     mntpt = mntdata[:-1]
                     assert(mntpt)
-                    if mounted and rconf.args.subcmd == "slave" \
-                       and not gconf.get("slave-access-mount"):
+                    if mounted and rconf.args.subcmd == "subordinate" \
+                       and not gconf.get("subordinate-access-mount"):
                         po = self.umount_l(mntpt)
                         po.terminate_geterr(fail_on_err=False)
                         if po.returncode != 0:
                             po.errlog()
                             rv = po.returncode
-                    if rconf.args.subcmd == "slave" \
-                       and not gconf.get("slave-access-mount"):
+                    if rconf.args.subcmd == "subordinate" \
+                       and not gconf.get("subordinate-access-mount"):
                         self.cleanup_mntpt(mntpt)
             except:
                 logging.exception('mount cleanup failure:')
@@ -1038,11 +1038,11 @@ class GLUSTER(object):
 
     """scheme class for gluster:// urls
 
-    can be used to represent a gluster slave server
-    on slave side, or interface to a remote gluster
-    slave on master side, or to represent master
-    (slave-ish features come from the mixins, master
-    functionality is outsourced to GMaster from master)
+    can be used to represent a gluster subordinate server
+    on subordinate side, or interface to a remote gluster
+    subordinate on main side, or to represent main
+    (subordinate-ish features come from the mixins, main
+    functionality is outsourced to GMain from main)
     """
     server = GLUSTERServer
 
@@ -1072,12 +1072,12 @@ class GLUSTER(object):
         mounter = label and MountbrokerMounter or DirectMounter
 
         log_file = gconf.get("gluster-log-file")
-        if rconf.args.subcmd == "slave":
-            log_file = gconf.get("slave-gluster-log-file")
+        if rconf.args.subcmd == "subordinate":
+            log_file = gconf.get("subordinate-gluster-log-file")
 
         log_level = gconf.get("gluster-log-level")
-        if rconf.args.subcmd == "slave":
-            log_level = gconf.get("slave-gluster-log-level")
+        if rconf.args.subcmd == "subordinate":
+            log_level = gconf.get("subordinate-gluster-log-level")
 
         params = gconf.get("gluster-params").split() + \
             ['log-level=' + log_level] + \
@@ -1089,22 +1089,22 @@ class GLUSTER(object):
         logging.info(lf("Mounted gluster volume",
                         duration="%.4f" % (time.time() - t0)))
 
-    def gmaster_instantiate_tuple(self, slave):
+    def gmain_instantiate_tuple(self, subordinate):
         """return a tuple of the 'one shot' and the 'main crawl'
         class instance"""
-        return (gmaster_builder('xsync')(self, slave),
-                gmaster_builder()(self, slave),
-                gmaster_builder('changeloghistory')(self, slave))
+        return (gmain_builder('xsync')(self, subordinate),
+                gmain_builder()(self, subordinate),
+                gmain_builder('changeloghistory')(self, subordinate))
 
-    def service_loop(self, slave=None):
+    def service_loop(self, subordinate=None):
         """enter service loop
 
-        - if slave given, instantiate GMaster and
+        - if subordinate given, instantiate GMain and
           pass control to that instance, which implements
-          master behavior
+          main behavior
         - else do that's what's inherited
         """
-        if rconf.args.subcmd == "slave":
+        if rconf.args.subcmd == "subordinate":
             if gconf.get("use-rsync-xattrs") and not privileged():
                 raise GsyncdError(
                     "using rsync for extended attributes is not supported")
@@ -1114,15 +1114,15 @@ class GLUSTER(object):
             t = syncdutils.Thread(target=lambda: (repce.service_loop(),
                                                   syncdutils.finalize()))
             t.start()
-            logging.info("slave listening")
-            if gconf.get("slave-timeout") and gconf.get("slave-timeout") > 0:
+            logging.info("subordinate listening")
+            if gconf.get("subordinate-timeout") and gconf.get("subordinate-timeout") > 0:
                 while True:
                     lp = self.server.last_keep_alive
-                    time.sleep(gconf.get("slave-timeout"))
+                    time.sleep(gconf.get("subordinate-timeout"))
                     if lp == self.server.last_keep_alive:
                         logging.info(
                             lf("connection inactive, stopping",
-                               timeout=gconf.get("slave-timeout")))
+                               timeout=gconf.get("subordinate-timeout")))
                         break
             else:
                 select((), (), ())
@@ -1159,48 +1159,48 @@ class GLUSTER(object):
             def linkto_check(cls, e):
                 return super(brickserver, cls).linkto_check(e)
 
-        # define {,set_}xtime in slave, thus preempting
+        # define {,set_}xtime in subordinate, thus preempting
         # the call to remote, so that it takes data from
         # the local brick
-        slave.server.xtime = types.MethodType(
+        subordinate.server.xtime = types.MethodType(
             lambda _self, path, uuid: (
                 brickserver.xtime(path,
-                                  uuid + '.' + rconf.args.slave_id)
+                                  uuid + '.' + rconf.args.subordinate_id)
             ),
-            slave.server)
-        slave.server.stime = types.MethodType(
+            subordinate.server)
+        subordinate.server.stime = types.MethodType(
             lambda _self, path, uuid: (
                 brickserver.stime(path,
-                                  uuid + '.' + rconf.args.slave_id)
+                                  uuid + '.' + rconf.args.subordinate_id)
             ),
-            slave.server)
-        slave.server.entry_stime = types.MethodType(
+            subordinate.server)
+        subordinate.server.entry_stime = types.MethodType(
             lambda _self, path, uuid: (
                 brickserver.entry_stime(
                     path,
-                    uuid + '.' + rconf.args.slave_id)
+                    uuid + '.' + rconf.args.subordinate_id)
             ),
-            slave.server)
-        slave.server.set_stime = types.MethodType(
+            subordinate.server)
+        subordinate.server.set_stime = types.MethodType(
             lambda _self, path, uuid, mark: (
                 brickserver.set_stime(path,
-                                      uuid + '.' + rconf.args.slave_id,
+                                      uuid + '.' + rconf.args.subordinate_id,
                                       mark)
             ),
-            slave.server)
-        slave.server.set_entry_stime = types.MethodType(
+            subordinate.server)
+        subordinate.server.set_entry_stime = types.MethodType(
             lambda _self, path, uuid, mark: (
                 brickserver.set_entry_stime(
                     path,
-                    uuid + '.' + rconf.args.slave_id,
+                    uuid + '.' + rconf.args.subordinate_id,
                     mark)
             ),
-            slave.server)
+            subordinate.server)
 
-        (g1, g2, g3) = self.gmaster_instantiate_tuple(slave)
-        g1.master.server = brickserver
-        g2.master.server = brickserver
-        g3.master.server = brickserver
+        (g1, g2, g3) = self.gmain_instantiate_tuple(subordinate)
+        g1.main.server = brickserver
+        g2.main.server = brickserver
+        g3.main.server = brickserver
 
         # bad bad bad: bad way to do things like this
         # need to make this elegant
@@ -1214,8 +1214,8 @@ class GLUSTER(object):
                               rconf.args.local_node,
                               rconf.args.local_path,
                               rconf.args.local_node_id,
-                              rconf.args.master,
-                              rconf.args.slave)
+                              rconf.args.main,
+                              rconf.args.subordinate)
         status.reset_on_worker_start()
         rv = changelog_agent.version()
         if int(rv) != CHANGELOG_AGENT_CLIENT_VERSION:
@@ -1284,7 +1284,7 @@ class SSH(object):
 
     """scheme class for ssh:// urls
 
-    interface to remote slave on master side
+    interface to remote subordinate on main side
     implementing an ssh based proxy
     """
 
@@ -1320,11 +1320,11 @@ class SSH(object):
             raise GsyncdError(
                 "RePCe major version mismatch: local %s, remote %s" %
                 (exrv, rv))
-        slavepath = "/proc/%d/cwd" % self.server.pid()
-        self.slaveurl = ':'.join([self.remote_addr, slavepath])
+        subordinatepath = "/proc/%d/cwd" % self.server.pid()
+        self.subordinateurl = ':'.join([self.remote_addr, subordinatepath])
 
     def connect_remote(self):
-        """connect to inner slave url through outer ssh url
+        """connect to inner subordinate url through outer ssh url
 
         Wrap the connecting utility in ssh.
 
@@ -1345,7 +1345,7 @@ class SSH(object):
                                  self.remote_addr,
                                  self.volume)
 
-        logging.info("Initializing SSH connection between master and slave...")
+        logging.info("Initializing SSH connection between main and subordinate...")
         t0 = time.time()
 
         extra_opts = []
@@ -1356,42 +1356,42 @@ class SSH(object):
         if gconf.get("use-rsync-xattrs"):
             extra_opts.append('--use-rsync-xattrs')
 
-        args_to_slave = [gconf.get("ssh-command")] + \
+        args_to_subordinate = [gconf.get("ssh-command")] + \
             gconf.get("ssh-options").split() + \
             ["-p", str(gconf.get("ssh-port"))] + \
             rconf.ssh_ctl_args + [self.remote_addr] + \
-            [remote_gsyncd, "slave"] + \
+            [remote_gsyncd, "subordinate"] + \
             extra_opts + \
-            [rconf.args.master, rconf.args.slave] + \
+            [rconf.args.main, rconf.args.subordinate] + \
             [
-                '--master-node', rconf.args.local_node,
-                '--master-node-id', rconf.args.local_node_id,
-                '--master-brick', rconf.args.local_path,
+                '--main-node', rconf.args.local_node,
+                '--main-node-id', rconf.args.local_node_id,
+                '--main-brick', rconf.args.local_path,
                 '--local-node', rconf.args.resource_remote,
                 '--local-node-id', rconf.args.resource_remote_id] + \
             [
-                # Add all config arguments here, slave gsyncd will not use
-                # config file in slave side, so all overridding options should
+                # Add all config arguments here, subordinate gsyncd will not use
+                # config file in subordinate side, so all overridding options should
                 # be sent as arguments
-                '--slave-timeout', str(gconf.get("slave-timeout")),
-                '--slave-log-level', gconf.get("slave-log-level"),
-                '--slave-gluster-log-level',
-                gconf.get("slave-gluster-log-level"),
-                '--slave-gluster-command-dir',
-                gconf.get("slave-gluster-command-dir")]
+                '--subordinate-timeout', str(gconf.get("subordinate-timeout")),
+                '--subordinate-log-level', gconf.get("subordinate-log-level"),
+                '--subordinate-gluster-log-level',
+                gconf.get("subordinate-gluster-log-level"),
+                '--subordinate-gluster-command-dir',
+                gconf.get("subordinate-gluster-command-dir")]
 
-        if gconf.get("slave-access-mount"):
-            args_to_slave.append('--slave-access-mount')
+        if gconf.get("subordinate-access-mount"):
+            args_to_subordinate.append('--subordinate-access-mount')
 
         if rconf.args.debug:
-            args_to_slave.append('--debug')
+            args_to_subordinate.append('--debug')
 
-        po = Popen(args_to_slave,
+        po = Popen(args_to_subordinate,
                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                    stderr=subprocess.PIPE)
         rconf.transport = po
         self.start_fd_client(po.stdout, po.stdin)
-        logging.info(lf("SSH connection between master and slave established.",
+        logging.info(lf("SSH connection between main and subordinate established.",
                         duration="%.4f" % (time.time() - t0)))
 
     def rsync(self, files, *args, **kw):
@@ -1437,7 +1437,7 @@ class SSH(object):
             gconf.get("rsync-options").split() + \
             extra_rsync_flags + ['.'] + \
             ["-e", " ".join(rsync_ssh_opts)] + \
-            [self.slaveurl]
+            [self.subordinateurl]
 
         log_rsync_performance = gconf.getr("log-rsync-performance", False)
 
@@ -1480,7 +1480,7 @@ class SSH(object):
 
         return po
 
-    def tarssh(self, files, slaveurl, log_err=False):
+    def tarssh(self, files, subordinateurl, log_err=False):
         """invoke tar+ssh
         -z (compress) can be use if needed, but omitting it now
         as it results in weird error (tar+ssh errors out (errcode: 2)
@@ -1488,7 +1488,7 @@ class SSH(object):
         if not files:
             raise GsyncdError("no files to sync")
         logging.debug("files: " + ", ".join(files))
-        (host, rdir) = slaveurl.split(':')
+        (host, rdir) = subordinateurl.split(':')
         tar_cmd = ["tar"] + \
             ["--sparse", "-cf", "-", "--files-from", "-"]
         ssh_cmd = gconf.get("ssh-command-tar").split() + \
